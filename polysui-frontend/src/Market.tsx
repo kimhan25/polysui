@@ -3,6 +3,7 @@ import {
   useSuiClient,
   useCurrentAccount,
 } from "@mysten/dapp-kit";
+
 import { Transaction } from "@mysten/sui/transactions";
 import { isValidSuiObjectId } from "@mysten/sui/utils";
 import { useState, useEffect, useRef } from "react";
@@ -15,14 +16,12 @@ function parseMoveError(error: any): string {
       typeof error === "string"
         ? error
         : error?.message || JSON.stringify(error);
-
     if (
       errorString.includes("User rejected") ||
       errorString.includes("rejected the request")
     ) {
       return "Transaction cancelled by user";
     }
-
     if (
       errorString.includes("EAlreadyVoted") ||
       errorString.includes("code: 4") ||
@@ -54,7 +53,6 @@ function parseMoveError(error: any): string {
     if (errorString.includes("Insufficient")) {
       return "Insufficient SUI balance";
     }
-
     return "Transaction failed";
   } catch (e) {
     return "Transaction failed";
@@ -97,21 +95,17 @@ export function Market({
       setIsLoading(false);
       return;
     }
-
     try {
       const obj = await client.getObject({
         id,
         options: { showContent: true },
       });
-
       if (obj.data?.content?.dataType === "moveObject") {
         const data = obj.data.content.fields as any;
         setMarketData(data);
-
         if (currentAccount?.address) {
           const voted = checkIfUserVoted(data, currentAccount.address);
           setHasUserVoted(voted);
-
           if (data.whitelist_enabled) {
             const votersList = Array.isArray(data.voters) ? data.voters : [];
             const initialVotersList = Array.isArray(data.initial_voters)
@@ -139,14 +133,12 @@ export function Market({
   useEffect(() => {
     const currentAddr = currentAccount?.address;
     const previousAddr = previousAccountRef.current;
-
     if (previousAddr !== undefined && previousAddr !== currentAddr) {
       setIsLoading(true);
       setHasUserVoted(false);
       setIsWhitelisted(true);
       fetchMarket();
     }
-
     previousAccountRef.current = currentAddr;
   }, [currentAccount?.address]);
 
@@ -156,41 +148,20 @@ export function Market({
     return () => clearInterval(interval);
   }, [id]);
 
-  // Updated voting logic
   const handleVote = async (index: number) => {
     if (hasUserVoted) {
       onNotify("You have already voted in this market", "error");
       return;
     }
-
     setVotingFor(index);
 
-    const clockId = "0x6"; // Sui testnet global clock
-
-    // Optionally verify existence of the clock object
-    try {
-      const clockObj = await client.getObject({ id: clockId });
-      if (!clockObj.data || clockObj.data.type !== "0x2::clock::Clock") {
-        onNotify("Global clock object not found (0x6).", "error");
-        setVotingFor(null);
-        return;
-      }
-    } catch (e) {
-      onNotify("Failed to fetch clock object for voting.", "error");
-      setVotingFor(null);
-      return;
-    }
-
-    // Build and sign transaction
+    // Simplified: Skip manual clock object fetching; pass clock object id directly
     const tx = new Transaction();
     tx.moveCall({
       target: `${TESTNET_POLYSUI_PACKAGE_ID}::market::vote`,
-      arguments: [
-        tx.object(id), // &mut VotingMarket
-        tx.pure.u64(BigInt(index)), // option_index (u64)
-        tx.object(clockId), // &Clock
-      ],
+      arguments: [tx.object(id), tx.pure.u64(BigInt(index)), tx.object("0x6")],
     });
+    tx.setGasBudget(100_000_000);
 
     signAndExecute(
       { transaction: tx },
@@ -201,7 +172,7 @@ export function Market({
             onNotify("Vote recorded successfully", "success");
             setHasUserVoted(true);
             await fetchMarket();
-          } catch (e) {
+          } catch {
             onNotify("Vote confirmed", "success");
             setHasUserVoted(true);
           } finally {
@@ -209,21 +180,9 @@ export function Market({
           }
         },
         onError: (e: any) => {
-          // Added error log for full diagnostics
           console.error("Voting tx failure:", e);
           const errorCode = parseMoveError(e);
-
-          if (errorCode === "EAlreadyVoted") {
-            onNotify("You have already voted in this market", "error");
-            setHasUserVoted(true);
-          } else if (errorCode === "ENotWhitelisted") {
-            onNotify("Your wallet is not whitelisted for this market", "error");
-            setIsWhitelisted(false);
-          } else if (errorCode === "Transaction cancelled by user") {
-            onNotify("Transaction cancelled", "error");
-          } else {
-            onNotify(errorCode, "error");
-          }
+          onNotify(errorCode, "error");
           setVotingFor(null);
         },
       },
@@ -235,10 +194,8 @@ export function Market({
       onNotify("Please enter a valid Sui address", "error");
       return;
     }
-
     setIsAddingAddress(true);
     const tx = new Transaction();
-
     tx.moveCall({
       target: `${TESTNET_POLYSUI_PACKAGE_ID}::market::add_to_whitelist`,
       arguments: [
@@ -247,7 +204,6 @@ export function Market({
         tx.object("0x6"),
       ],
     });
-
     signAndExecute(
       { transaction: tx },
       {
@@ -279,13 +235,11 @@ export function Market({
   const formatTime = (deadline: number): string => {
     const remaining = Number(deadline) - Date.now();
     if (remaining <= 0) return "Ended";
-
     const days = Math.floor(remaining / (1000 * 60 * 60 * 24));
     const hours = Math.floor(
       (remaining % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60),
     );
     const minutes = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
-
     if (days > 0) return `${days}d ${hours}h`;
     if (hours > 0) return `${hours}h ${minutes}m`;
     return `${minutes}m`;
