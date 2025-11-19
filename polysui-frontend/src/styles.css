@@ -1121,6 +1121,7 @@ textarea::-moz-selection {
   font-family: "Courier New", monospace;
   transition: border-color 0.15s;
   background: #ffffff;
+  color: black;
 }
 
 .whitelist-input:focus {
