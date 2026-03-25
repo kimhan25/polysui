@@ -1,1 +1,7 @@
 polysui-frontend/node_modules
+polysui-frontend/.env
+polysui-frontend/.env.*
+polysui-frontend/dist/
+polysui-frontend/.DS_Store
+move/market/build/
+.DS_Store

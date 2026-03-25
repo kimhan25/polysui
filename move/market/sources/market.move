@@ -9,6 +9,7 @@ module polysui::market {
     const ENotCreator: u64 = 2;
     const EInvalidOption: u64 = 3;
     const EAlreadyVoted: u64 = 4;
+    const EMarketCancelled: u64 = 5;
     const EInvalidDuration: u64 = 6;
     const EInvalidOptionsCount: u64 = 7;
 
@@ -71,7 +72,6 @@ module polysui::market {
         clock: &Clock,
         ctx: &mut TxContext
     ) {
-        // Validate inputs
         let options_count = vector::length(&options);
         assert!(options_count >= 2 && options_count <= 10, EInvalidOptionsCount);
         assert!(duration_minutes > 0, EInvalidDuration);
@@ -80,7 +80,6 @@ module polysui::market {
         let current_time = clock::timestamp_ms(clock);
         let deadline = current_time + (duration_minutes * 60 * 1000);
 
-        // Initialize votes vector with zeros
         let mut votes = vector::empty<u64>();
         let mut i = 0;
         while (i < options_count) {
@@ -88,7 +87,6 @@ module polysui::market {
             i = i + 1;
         };
 
-        // Add creator to whitelist if whitelist is enabled
         let mut voters_list = initial_voters;
         if (whitelist_enabled && !vector::contains(&voters_list, &creator)) {
             vector::push_back(&mut voters_list, creator);
@@ -110,7 +108,6 @@ module polysui::market {
 
         let market_id = object::id(&market);
 
-        // Emit event
         sui::event::emit(MarketCreated {
             id: market_id,
             creator,
@@ -118,7 +115,6 @@ module polysui::market {
             deadline,
         });
 
-        // Share the market object
         transfer::share_object(market);
     }
 
@@ -129,22 +125,15 @@ module polysui::market {
         clock: &Clock,
         ctx: &mut TxContext
     ) {
-        // Check if market is active
-        assert!(market.is_active, EMarketEnded);
+        assert!(market.is_active, EMarketCancelled);
 
-        // Check if deadline has passed
         let current_time = clock::timestamp_ms(clock);
         assert!(current_time < market.deadline, EMarketEnded);
-
-        // Validate option index
         assert!(option_index < vector::length(&market.options), EInvalidOption);
 
         let voter = tx_context::sender(ctx);
-
-        // Check if already voted
         assert!(!vector::contains(&market.voters, &voter), EAlreadyVoted);
 
-        // Check whitelist if enabled
         if (market.whitelist_enabled) {
             assert!(
                 vector::contains(&market.initial_voters, &voter),
@@ -152,12 +141,10 @@ module polysui::market {
             );
         };
 
-        // Record vote
         let vote_count = vector::borrow_mut(&mut market.votes, option_index);
         *vote_count = *vote_count + 1;
         vector::push_back(&mut market.voters, voter);
 
-        // Emit event
         sui::event::emit(VoteCast {
             market_id: object::id(market),
             voter,
@@ -166,7 +153,7 @@ module polysui::market {
         });
     }
 
-    /// Cancel market (only creator, only before deadline)
+    /// Cancel market (only creator, only if active and before deadline)
     public fun cancel_market(
         market: &mut VotingMarket,
         clock: &Clock,
@@ -174,7 +161,8 @@ module polysui::market {
     ) {
         let sender = tx_context::sender(ctx);
         assert!(sender == market.creator, ENotCreator);
-        
+        assert!(market.is_active, EMarketCancelled);
+
         let current_time = clock::timestamp_ms(clock);
         assert!(current_time < market.deadline, EMarketEnded);
 
@@ -196,10 +184,10 @@ module polysui::market {
     ) {
         let sender = tx_context::sender(ctx);
         assert!(sender == market.creator, ENotCreator);
-        
+        assert!(market.is_active, EMarketCancelled);
+
         let current_time = clock::timestamp_ms(clock);
         assert!(current_time < market.deadline, EMarketEnded);
-        assert!(market.is_active, EMarketEnded);
 
         let old_deadline = market.deadline;
         market.deadline = market.deadline + (additional_minutes * 60 * 1000);
@@ -211,7 +199,7 @@ module polysui::market {
         });
     }
 
-    /// Add addresses to whitelist (only creator, only before deadline)
+    /// Add addresses to whitelist (only creator, only if active and before deadline)
     public fun add_to_whitelist(
         market: &mut VotingMarket,
         addresses: vector<address>,
@@ -220,7 +208,8 @@ module polysui::market {
     ) {
         let sender = tx_context::sender(ctx);
         assert!(sender == market.creator, ENotCreator);
-        
+        assert!(market.is_active, EMarketCancelled);
+
         let current_time = clock::timestamp_ms(clock);
         assert!(current_time < market.deadline, EMarketEnded);
         assert!(market.whitelist_enabled, ENotWhitelisted);
@@ -268,7 +257,7 @@ module polysui::market {
         vector::contains(&market.voters, &addr)
     }
 
-    /// Get winning option index (after deadline)
+    /// Get winning option index (returns winner_index and max_votes; tie returns first highest)
     public fun get_winner(market: &VotingMarket): u64 {
         let mut max_votes = 0u64;
         let mut winner_index = 0u64;

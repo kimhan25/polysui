@@ -5,7 +5,7 @@ import {
 } from "@mysten/dapp-kit";
 
 import { Transaction } from "@mysten/sui/transactions";
-import { isValidSuiObjectId } from "@mysten/sui/utils";
+import { isValidSuiObjectId, isValidSuiAddress } from "@mysten/sui/utils";
 import { useState, useEffect, useRef } from "react";
 import { TESTNET_POLYSUI_PACKAGE_ID } from "./constants";
 import "./styles.css";
@@ -27,7 +27,7 @@ function parseMoveError(error: any): string {
       errorString.includes("code: 4") ||
       errorString.includes("abort code: 4")
     ) {
-      return "EAlreadyVoted";
+      return "You have already voted in this market";
     }
     if (
       errorString.includes("EMarketEnded") ||
@@ -37,11 +37,18 @@ function parseMoveError(error: any): string {
       return "This market has ended";
     }
     if (
+      errorString.includes("EMarketCancelled") ||
+      errorString.includes("code: 5") ||
+      errorString.includes("abort code: 5")
+    ) {
+      return "This market has been cancelled";
+    }
+    if (
       errorString.includes("ENotWhitelisted") ||
       errorString.includes("code: 1") ||
       errorString.includes("abort code: 1")
     ) {
-      return "ENotWhitelisted";
+      return "Your wallet is not whitelisted for this market";
     }
     if (
       errorString.includes("EInvalidOption") ||
@@ -88,6 +95,15 @@ export function Market({
     return votersList.includes(userAddress);
   };
 
+  // FIX: whitelist status should only check initial_voters, not voters
+  const checkIfWhitelisted = (data: any, userAddress: string): boolean => {
+    if (!data.whitelist_enabled) return true;
+    const initialVotersList = Array.isArray(data.initial_voters)
+      ? data.initial_voters
+      : [];
+    return initialVotersList.includes(userAddress);
+  };
+
   const isCreator = currentAccount?.address === marketData?.creator;
 
   const fetchMarket = async () => {
@@ -106,18 +122,7 @@ export function Market({
         if (currentAccount?.address) {
           const voted = checkIfUserVoted(data, currentAccount.address);
           setHasUserVoted(voted);
-          if (data.whitelist_enabled) {
-            const votersList = Array.isArray(data.voters) ? data.voters : [];
-            const initialVotersList = Array.isArray(data.initial_voters)
-              ? data.initial_voters
-              : [];
-            const whitelisted =
-              votersList.includes(currentAccount.address) ||
-              initialVotersList.includes(currentAccount.address);
-            setIsWhitelisted(whitelisted);
-          } else {
-            setIsWhitelisted(true);
-          }
+          setIsWhitelisted(checkIfWhitelisted(data, currentAccount.address));
         } else {
           setHasUserVoted(false);
           setIsWhitelisted(true);
@@ -155,7 +160,6 @@ export function Market({
     }
     setVotingFor(index);
 
-    // Simplified: Skip manual clock object fetching; pass clock object id directly
     const tx = new Transaction();
     tx.moveCall({
       target: `${TESTNET_POLYSUI_PACKAGE_ID}::market::vote`,
@@ -181,8 +185,8 @@ export function Market({
         },
         onError: (e: any) => {
           console.error("Voting tx failure:", e);
-          const errorCode = parseMoveError(e);
-          onNotify(errorCode, "error");
+          const errorMsg = parseMoveError(e);
+          onNotify(errorMsg, "error");
           setVotingFor(null);
         },
       },
@@ -190,8 +194,10 @@ export function Market({
   };
 
   const handleAddToWhitelist = () => {
-    if (!newAddress.trim() || !isValidSuiObjectId(newAddress.trim())) {
-      onNotify("Please enter a valid Sui address", "error");
+    const trimmed = newAddress.trim();
+    // FIX: use isValidSuiAddress instead of isValidSuiObjectId for wallet addresses
+    if (!trimmed || !isValidSuiAddress(trimmed)) {
+      onNotify("Please enter a valid Sui wallet address", "error");
       return;
     }
     setIsAddingAddress(true);
@@ -200,10 +206,11 @@ export function Market({
       target: `${TESTNET_POLYSUI_PACKAGE_ID}::market::add_to_whitelist`,
       arguments: [
         tx.object(id),
-        tx.pure.vector("address", [newAddress.trim()]),
+        tx.pure.vector("address", [trimmed]),
         tx.object("0x6"),
       ],
     });
+    tx.setGasBudget(100_000_000);
     signAndExecute(
       { transaction: tx },
       {
@@ -271,7 +278,7 @@ export function Market({
     ? marketData.votes.reduce((sum: number, v: string) => sum + Number(v), 0)
     : 0;
 
-  const canVote = currentAccount && !isEnded && !hasUserVoted && isWhitelisted;
+  const canVote = currentAccount && !isEnded && !hasUserVoted && isWhitelisted && marketData.is_active;
 
   return (
     <div className="market-container">
@@ -297,9 +304,9 @@ export function Market({
             <div className="stat-item-new">
               <span className="stat-label-new">Status</span>
               <span
-                className={`stat-value-new ${isEnded ? "ended" : "active"}`}
+                className={`stat-value-new ${!marketData.is_active ? "ended" : isEnded ? "ended" : "active"}`}
               >
-                {isEnded ? "Ended" : "Active"}
+                {!marketData.is_active ? "Cancelled" : isEnded ? "Ended" : "Active"}
               </span>
             </div>
             <div className="stat-item-new">
@@ -387,6 +394,12 @@ export function Market({
           </div>
         )}
 
+        {!marketData.is_active && (
+          <div className="alert-new error">
+            ✗ This market has been cancelled by the creator
+          </div>
+        )}
+
         <div className="options-grid-new">
           {marketData.options.map((opt: string, idx: number) => {
             const voteCount = Number(marketData.votes[idx] || 0);
@@ -427,13 +440,15 @@ export function Market({
                 >
                   {votingFor === idx
                     ? "Voting..."
-                    : hasUserVoted
-                      ? "Already Voted"
-                      : !isWhitelisted && marketData.whitelist_enabled
-                        ? "Not Whitelisted"
-                        : isEnded
-                          ? "Ended"
-                          : "Vote"}
+                    : !marketData.is_active
+                      ? "Cancelled"
+                      : hasUserVoted
+                        ? "Already Voted"
+                        : !isWhitelisted && marketData.whitelist_enabled
+                          ? "Not Whitelisted"
+                          : isEnded
+                            ? "Ended"
+                            : "Vote"}
                 </button>
               </div>
             );

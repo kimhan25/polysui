@@ -4,6 +4,7 @@ import {
   useSignAndExecuteTransaction,
   useSuiClient,
 } from "@mysten/dapp-kit";
+import { isValidSuiAddress } from "@mysten/sui/utils";
 import { useState } from "react";
 import { TESTNET_POLYSUI_PACKAGE_ID, TESTNET_CLOCK_ID } from "./constants";
 import "./styles.css";
@@ -74,15 +75,29 @@ export function CreateMarket({ onCreated, onNotify }: CreateMarketProps) {
 
     let whitelistAddresses: string[] = [];
     if (accessType === "whitelist") {
-      whitelistAddresses = whitelist
+      const rawAddresses = whitelist
         .split("\n")
         .map((addr) => addr.trim())
         .filter((addr) => addr.length > 0);
 
-      if (whitelistAddresses.length === 0) {
+      if (rawAddresses.length === 0) {
         onNotify("Please add at least one address to the whitelist", "error");
         return;
       }
+
+      // FIX: validate each address before submitting
+      const invalidAddresses = rawAddresses.filter(
+        (addr) => !isValidSuiAddress(addr)
+      );
+      if (invalidAddresses.length > 0) {
+        onNotify(
+          `Invalid Sui address(es): ${invalidAddresses.slice(0, 2).join(", ")}${invalidAddresses.length > 2 ? " ..." : ""}`,
+          "error"
+        );
+        return;
+      }
+
+      whitelistAddresses = rawAddresses;
     }
 
     setIsCreating(true);
@@ -102,6 +117,9 @@ export function CreateMarket({ onCreated, onNotify }: CreateMarketProps) {
         ],
       });
 
+      // FIX: add gas budget to create_market tx
+      tx.setGasBudget(100_000_000);
+
       signAndExecute(
         {
           transaction: tx,
@@ -111,10 +129,8 @@ export function CreateMarket({ onCreated, onNotify }: CreateMarketProps) {
             console.log("Transaction successful:", result);
 
             try {
-              // Wait a bit for the transaction to be processed
               await new Promise((resolve) => setTimeout(resolve, 2000));
 
-              // Fetch transaction details to get the created objects
               const txResponse = await suiClient.getTransactionBlock({
                 digest: result.digest,
                 options: {
@@ -125,7 +141,6 @@ export function CreateMarket({ onCreated, onNotify }: CreateMarketProps) {
 
               console.log("Transaction details:", txResponse);
 
-              // Find the created market object
               let marketId = "";
               if (txResponse.objectChanges) {
                 for (const change of txResponse.objectChanges) {
@@ -144,7 +159,6 @@ export function CreateMarket({ onCreated, onNotify }: CreateMarketProps) {
                 setShowMarketId(true);
                 onNotify("Market created successfully!", "success");
 
-                // Reset form
                 setQuestion("");
                 setOptions(["", ""]);
                 setDuration("60");
@@ -192,7 +206,6 @@ export function CreateMarket({ onCreated, onNotify }: CreateMarketProps) {
         <p>Set up your voting market with custom options and settings</p>
       </div>
 
-      {/* Market ID Modal */}
       {showMarketId && (
         <div className="modal-overlay" onClick={() => setShowMarketId(false)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
@@ -325,7 +338,7 @@ export function CreateMarket({ onCreated, onNotify }: CreateMarketProps) {
               placeholder="0x123...&#10;0x456...&#10;0x789..."
               className="monospace"
             />
-            <small>Enter one address per line</small>
+            <small>Enter one valid Sui address per line (starting with 0x)</small>
           </div>
         )}
 
