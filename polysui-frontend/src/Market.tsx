@@ -99,10 +99,37 @@ export function Market({
 
   const previousAccountRef = useRef<string | undefined>();
 
-  const checkIfUserVoted = (data: any, userAddress: string): boolean => {
-    if (!data || !data.voters || !userAddress) return false;
-    const votersList = Array.isArray(data.voters) ? data.voters : [];
-    return votersList.includes(userAddress);
+  // After Table refactor: voters is a Table<address,u64> on-chain.
+  // The RPC returns it as a dynamic field object, so we can't do
+  // voters.includes() anymore. Instead we call has_voted via devInspect,
+  // or we rely on the VoteCast event. Simplest: check via getObject fields
+  // which for Table returns { id, size } — so we query has_voted via devInspect.
+  const checkIfUserVoted = async (
+    marketId: string,
+    userAddress: string
+  ): Promise<boolean> => {
+    try {
+      const tx = new Transaction();
+      tx.moveCall({
+        target: `${TESTNET_POLYSUI_PACKAGE_ID}::market::has_voted`,
+        arguments: [tx.object(marketId), tx.pure.address(userAddress)],
+      });
+      const result = await client.devInspectTransactionBlock({
+        transactionBlock: tx,
+        sender: userAddress,
+      });
+      if (
+        result.results &&
+        result.results[0]?.returnValues &&
+        result.results[0].returnValues[0]
+      ) {
+        const [valueBytes] = result.results[0].returnValues[0];
+        return valueBytes[0] === 1;
+      }
+      return false;
+    } catch {
+      return false;
+    }
   };
 
   const checkIfWhitelisted = (data: any, userAddress: string): boolean => {
@@ -129,7 +156,8 @@ export function Market({
         const data = obj.data.content.fields as any;
         setMarketData(data);
         if (currentAccount?.address) {
-          const voted = checkIfUserVoted(data, currentAccount.address);
+          // Use devInspect for O(1) has_voted check (Table-based)
+          const voted = await checkIfUserVoted(id, currentAccount.address);
           setHasUserVoted(voted);
           setIsWhitelisted(checkIfWhitelisted(data, currentAccount.address));
         } else {
@@ -322,7 +350,7 @@ export function Market({
     ? marketData.votes.reduce((sum: number, v: string) => sum + Number(v), 0)
     : 0;
 
-  // Compute winner and tie detection on frontend
+  // Tie/winner detection (frontend, uses votes vector which is unchanged)
   const voteCounts = marketData.votes
     ? marketData.votes.map((v: string) => Number(v))
     : [];
@@ -332,6 +360,10 @@ export function Market({
     .filter((i: number) => i !== -1);
   const isTie = winnerIndices.length > 1;
   const winnerIndex = winnerIndices.length === 1 ? winnerIndices[0] : -1;
+
+  // voters field from RPC is now { id: string, size: string } (Table object)
+  // Use the sum of votes vector for total count instead
+  const voterCount = totalVotes;
 
   const canVote =
     currentAccount &&
@@ -387,12 +419,12 @@ export function Market({
             </div>
             <div className="stat-item-new">
               <span className="stat-label-new">Total Votes</span>
-              <span className="stat-value-new">{totalVotes}</span>
+              <span className="stat-value-new">{voterCount}</span>
             </div>
           </div>
         </div>
 
-        {/* Winner / Tie banner — only shown after market ends with votes */}
+        {/* Winner / Tie banner */}
         {(isEnded || !marketData.is_active) && totalVotes > 0 && (
           <div className={`alert-new ${isTie ? "" : "success"}`}>
             {isTie
@@ -405,7 +437,7 @@ export function Market({
           </div>
         )}
 
-        {/* Creator controls: extend deadline */}
+        {/* Creator: extend deadline */}
         {isCreator && marketData.is_active && !isEnded && (
           <div className="whitelist-manager">
             <div className="whitelist-header">
@@ -529,7 +561,6 @@ export function Market({
               totalVotes > 0
                 ? ((voteCount / totalVotes) * 100).toFixed(1)
                 : "0";
-            // FIX: tie-aware leading badge — all tied options get the badge
             const isLeadingOption = winnerIndices.includes(idx) && maxVotes > 0;
 
             return (
@@ -538,7 +569,11 @@ export function Market({
                   <h3>{opt}</h3>
                   {isLeadingOption && (
                     <span className="badge-leading-new">
-                      {isTie ? "Tied" : (isEnded || !marketData.is_active) ? "🏆 Winner" : "Leading"}
+                      {isTie
+                        ? "Tied"
+                        : isEnded || !marketData.is_active
+                        ? "🏆 Winner"
+                        : "Leading"}
                     </span>
                   )}
                 </div>

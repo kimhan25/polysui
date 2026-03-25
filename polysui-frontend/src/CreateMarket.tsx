@@ -9,6 +9,8 @@ import { useState } from "react";
 import { TESTNET_POLYSUI_PACKAGE_ID, TESTNET_CLOCK_ID } from "./constants";
 import "./styles.css";
 
+const MAX_DURATION_MINUTES = 10080; // 7 days
+
 interface CreateMarketProps {
   onCreated: (id: string) => void;
   onNotify: (msg: string, type: "success" | "error") => void;
@@ -72,6 +74,10 @@ export function CreateMarket({ onCreated, onNotify }: CreateMarketProps) {
       onNotify("Duration must be at least 1 minute", "error");
       return;
     }
+    if (durationNum > MAX_DURATION_MINUTES) {
+      onNotify(`Duration cannot exceed ${MAX_DURATION_MINUTES} minutes (7 days)`, "error");
+      return;
+    }
 
     let whitelistAddresses: string[] = [];
     if (accessType === "whitelist") {
@@ -85,13 +91,14 @@ export function CreateMarket({ onCreated, onNotify }: CreateMarketProps) {
         return;
       }
 
-      // FIX: validate each address before submitting
       const invalidAddresses = rawAddresses.filter(
         (addr) => !isValidSuiAddress(addr)
       );
       if (invalidAddresses.length > 0) {
         onNotify(
-          `Invalid Sui address(es): ${invalidAddresses.slice(0, 2).join(", ")}${invalidAddresses.length > 2 ? " ..." : ""}`,
+          `Invalid Sui address(es): ${invalidAddresses.slice(0, 2).join(", ")}${
+            invalidAddresses.length > 2 ? " ..." : ""
+          }`,
           "error"
         );
         return;
@@ -117,13 +124,10 @@ export function CreateMarket({ onCreated, onNotify }: CreateMarketProps) {
         ],
       });
 
-      // FIX: add gas budget to create_market tx
       tx.setGasBudget(100_000_000);
 
       signAndExecute(
-        {
-          transaction: tx,
-        },
+        { transaction: tx },
         {
           onSuccess: async (result) => {
             console.log("Transaction successful:", result);
@@ -291,9 +295,10 @@ export function CreateMarket({ onCreated, onNotify }: CreateMarketProps) {
               value={duration}
               onChange={(e) => setDuration(e.target.value)}
               min="1"
+              max={MAX_DURATION_MINUTES}
               required
             />
-            <small>Minimum: 1 minute</small>
+            <small>Min 1 min — max 7 days (10,080 min)</small>
           </div>
 
           <div className="form-group-clean">
@@ -350,8 +355,8 @@ export function CreateMarket({ onCreated, onNotify }: CreateMarketProps) {
           {isCreating
             ? "Creating..."
             : !currentAccount
-              ? "Connect Wallet First"
-              : "Create Market"}
+            ? "Connect Wallet First"
+            : "Create Market"}
         </button>
       </form>
     </div>
