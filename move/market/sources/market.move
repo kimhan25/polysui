@@ -12,9 +12,14 @@ module polysui::market {
     const EMarketCancelled: u64 = 5;
     const EInvalidDuration: u64 = 6;
     const EInvalidOptionsCount: u64 = 7;
+    const ENoVotesCast: u64 = 8;
+    const EExceedsMaxDeadline: u64 = 9;
+
+    // Max total duration = 7 days in minutes
+    const MAX_DURATION_MINUTES: u64 = 10080;
 
     // ==================== Structs ====================
-    
+
     /// Main voting market object
     public struct VotingMarket has key, store {
         id: UID,
@@ -74,7 +79,7 @@ module polysui::market {
     ) {
         let options_count = vector::length(&options);
         assert!(options_count >= 2 && options_count <= 10, EInvalidOptionsCount);
-        assert!(duration_minutes > 0, EInvalidDuration);
+        assert!(duration_minutes > 0 && duration_minutes <= MAX_DURATION_MINUTES, EInvalidDuration);
 
         let creator = tx_context::sender(ctx);
         let current_time = clock::timestamp_ms(clock);
@@ -175,7 +180,7 @@ module polysui::market {
         });
     }
 
-    /// Extend deadline (only creator, only before current deadline)
+    /// Extend deadline (only creator, only if active, capped at 7 days from created_at)
     public fun extend_deadline(
         market: &mut VotingMarket,
         additional_minutes: u64,
@@ -189,8 +194,13 @@ module polysui::market {
         let current_time = clock::timestamp_ms(clock);
         assert!(current_time < market.deadline, EMarketEnded);
 
+        // Cap: total deadline cannot exceed created_at + MAX_DURATION_MINUTES
+        let max_deadline = market.created_at + (MAX_DURATION_MINUTES * 60 * 1000);
+        let new_deadline = market.deadline + (additional_minutes * 60 * 1000);
+        assert!(new_deadline <= max_deadline, EExceedsMaxDeadline);
+
         let old_deadline = market.deadline;
-        market.deadline = market.deadline + (additional_minutes * 60 * 1000);
+        market.deadline = new_deadline;
 
         sui::event::emit(DeadlineExtended {
             market_id: object::id(market),
@@ -257,8 +267,26 @@ module polysui::market {
         vector::contains(&market.voters, &addr)
     }
 
-    /// Get winning option index (returns winner_index and max_votes; tie returns first highest)
-    public fun get_winner(market: &VotingMarket): u64 {
+    /// Get total vote count
+    public fun total_votes(market: &VotingMarket): u64 {
+        vector::length(&market.voters)
+    }
+
+    /// Get winning option index after market ends.
+    /// Aborts with EMarketEnded if market is still active.
+    /// Aborts with ENoVotesCast if no votes were cast.
+    /// In case of a tie, returns the first option with the highest votes.
+    public fun get_winner(market: &VotingMarket, clock: &Clock): u64 {
+        let current_time = clock::timestamp_ms(clock);
+        // Only callable after deadline or if cancelled
+        assert!(
+            current_time >= market.deadline || !market.is_active,
+            EMarketEnded
+        );
+
+        let total = vector::length(&market.voters);
+        assert!(total > 0, ENoVotesCast);
+
         let mut max_votes = 0u64;
         let mut winner_index = 0u64;
         let mut i = 0;
@@ -274,5 +302,35 @@ module polysui::market {
         };
 
         winner_index
+    }
+
+    /// Check if the market result is a tie (two or more options share max votes)
+    public fun is_tie(market: &VotingMarket, clock: &Clock): bool {
+        let current_time = clock::timestamp_ms(clock);
+        assert!(
+            current_time >= market.deadline || !market.is_active,
+            EMarketEnded
+        );
+
+        let total = vector::length(&market.voters);
+        if (total == 0) return false;
+
+        let mut max_votes = 0u64;
+        let mut max_count = 0u64;
+        let mut i = 0;
+        let len = vector::length(&market.votes);
+
+        while (i < len) {
+            let votes = *vector::borrow(&market.votes, i);
+            if (votes > max_votes) {
+                max_votes = votes;
+                max_count = 1;
+            } else if (votes == max_votes && votes > 0) {
+                max_count = max_count + 1;
+            };
+            i = i + 1;
+        };
+
+        max_count > 1
     }
 }

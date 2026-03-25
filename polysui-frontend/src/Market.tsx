@@ -57,6 +57,13 @@ function parseMoveError(error: any): string {
     ) {
       return "Invalid option selected";
     }
+    if (
+      errorString.includes("EExceedsMaxDeadline") ||
+      errorString.includes("code: 9") ||
+      errorString.includes("abort code: 9")
+    ) {
+      return "Extension would exceed maximum allowed duration (7 days)";
+    }
     if (errorString.includes("Insufficient")) {
       return "Insufficient SUI balance";
     }
@@ -86,6 +93,9 @@ export function Market({
   const [showWhitelistManager, setShowWhitelistManager] = useState(false);
   const [newAddress, setNewAddress] = useState("");
   const [isAddingAddress, setIsAddingAddress] = useState(false);
+  const [extendMinutes, setExtendMinutes] = useState("60");
+  const [isExtending, setIsExtending] = useState(false);
+  const [showExtendForm, setShowExtendForm] = useState(false);
 
   const previousAccountRef = useRef<string | undefined>();
 
@@ -95,7 +105,6 @@ export function Market({
     return votersList.includes(userAddress);
   };
 
-  // FIX: whitelist status should only check initial_voters, not voters
   const checkIfWhitelisted = (data: any, userAddress: string): boolean => {
     if (!data.whitelist_enabled) return true;
     const initialVotersList = Array.isArray(data.initial_voters)
@@ -195,7 +204,6 @@ export function Market({
 
   const handleAddToWhitelist = () => {
     const trimmed = newAddress.trim();
-    // FIX: use isValidSuiAddress instead of isValidSuiObjectId for wallet addresses
     if (!trimmed || !isValidSuiAddress(trimmed)) {
       onNotify("Please enter a valid Sui wallet address", "error");
       return;
@@ -229,6 +237,42 @@ export function Market({
             "error",
           );
           setIsAddingAddress(false);
+        },
+      },
+    );
+  };
+
+  const handleExtendDeadline = () => {
+    const mins = parseInt(extendMinutes);
+    if (!mins || mins < 1) {
+      onNotify("Please enter a valid number of minutes (min 1)", "error");
+      return;
+    }
+    setIsExtending(true);
+    const tx = new Transaction();
+    tx.moveCall({
+      target: `${TESTNET_POLYSUI_PACKAGE_ID}::market::extend_deadline`,
+      arguments: [
+        tx.object(id),
+        tx.pure.u64(BigInt(mins)),
+        tx.object("0x6"),
+      ],
+    });
+    tx.setGasBudget(100_000_000);
+    signAndExecute(
+      { transaction: tx },
+      {
+        onSuccess: async () => {
+          onNotify(`Deadline extended by ${mins} minute(s)`, "success");
+          setExtendMinutes("60");
+          setShowExtendForm(false);
+          await fetchMarket();
+          setIsExtending(false);
+        },
+        onError: (e: any) => {
+          const error = parseMoveError(e);
+          onNotify(error, "error");
+          setIsExtending(false);
         },
       },
     );
@@ -278,7 +322,23 @@ export function Market({
     ? marketData.votes.reduce((sum: number, v: string) => sum + Number(v), 0)
     : 0;
 
-  const canVote = currentAccount && !isEnded && !hasUserVoted && isWhitelisted && marketData.is_active;
+  // Compute winner and tie detection on frontend
+  const voteCounts = marketData.votes
+    ? marketData.votes.map((v: string) => Number(v))
+    : [];
+  const maxVotes = voteCounts.length > 0 ? Math.max(...voteCounts) : 0;
+  const winnerIndices = voteCounts
+    .map((v: number, i: number) => (v === maxVotes && maxVotes > 0 ? i : -1))
+    .filter((i: number) => i !== -1);
+  const isTie = winnerIndices.length > 1;
+  const winnerIndex = winnerIndices.length === 1 ? winnerIndices[0] : -1;
+
+  const canVote =
+    currentAccount &&
+    !isEnded &&
+    !hasUserVoted &&
+    isWhitelisted &&
+    marketData.is_active;
 
   return (
     <div className="market-container">
@@ -304,9 +364,19 @@ export function Market({
             <div className="stat-item-new">
               <span className="stat-label-new">Status</span>
               <span
-                className={`stat-value-new ${!marketData.is_active ? "ended" : isEnded ? "ended" : "active"}`}
+                className={`stat-value-new ${
+                  !marketData.is_active
+                    ? "ended"
+                    : isEnded
+                    ? "ended"
+                    : "active"
+                }`}
               >
-                {!marketData.is_active ? "Cancelled" : isEnded ? "Ended" : "Active"}
+                {!marketData.is_active
+                  ? "Cancelled"
+                  : isEnded
+                  ? "Ended"
+                  : "Active"}
               </span>
             </div>
             <div className="stat-item-new">
@@ -321,6 +391,58 @@ export function Market({
             </div>
           </div>
         </div>
+
+        {/* Winner / Tie banner — only shown after market ends with votes */}
+        {(isEnded || !marketData.is_active) && totalVotes > 0 && (
+          <div className={`alert-new ${isTie ? "" : "success"}`}>
+            {isTie
+              ? `🤝 It’s a tie between: ${winnerIndices
+                  .map((i: number) => marketData.options[i])
+                  .join(" & ")}`
+              : `🏆 Winner: ${marketData.options[winnerIndex]} (${maxVotes} vote${
+                  maxVotes !== 1 ? "s" : ""
+                })`}
+          </div>
+        )}
+
+        {/* Creator controls: extend deadline */}
+        {isCreator && marketData.is_active && !isEnded && (
+          <div className="whitelist-manager">
+            <div className="whitelist-header">
+              <h3>Creator Controls</h3>
+              <button
+                className="btn-toggle-whitelist"
+                onClick={() => setShowExtendForm(!showExtendForm)}
+              >
+                {showExtendForm ? "Hide" : "Extend Deadline"}
+              </button>
+            </div>
+            {showExtendForm && (
+              <div className="whitelist-content">
+                <p className="whitelist-description">
+                  Extend the market deadline (max 7 days total from creation)
+                </p>
+                <div className="whitelist-input-row">
+                  <input
+                    type="number"
+                    min="1"
+                    placeholder="Minutes to add"
+                    value={extendMinutes}
+                    onChange={(e) => setExtendMinutes(e.target.value)}
+                    className="whitelist-input"
+                  />
+                  <button
+                    className="btn-add-whitelist"
+                    onClick={handleExtendDeadline}
+                    disabled={isExtending || !extendMinutes}
+                  >
+                    {isExtending ? "Extending..." : "Extend"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {isCreator && marketData.whitelist_enabled && (
           <div className="whitelist-manager">
@@ -407,17 +529,17 @@ export function Market({
               totalVotes > 0
                 ? ((voteCount / totalVotes) * 100).toFixed(1)
                 : "0";
-            const isLeading =
-              voteCount ===
-                Math.max(...marketData.votes.map((v: string) => Number(v))) &&
-              voteCount > 0;
+            // FIX: tie-aware leading badge — all tied options get the badge
+            const isLeadingOption = winnerIndices.includes(idx) && maxVotes > 0;
 
             return (
               <div key={idx} className="option-box-new">
                 <div className="option-header-new">
                   <h3>{opt}</h3>
-                  {isLeading && (
-                    <span className="badge-leading-new">Leading</span>
+                  {isLeadingOption && (
+                    <span className="badge-leading-new">
+                      {isTie ? "Tied" : (isEnded || !marketData.is_active) ? "🏆 Winner" : "Leading"}
+                    </span>
                   )}
                 </div>
 
@@ -441,14 +563,14 @@ export function Market({
                   {votingFor === idx
                     ? "Voting..."
                     : !marketData.is_active
-                      ? "Cancelled"
-                      : hasUserVoted
-                        ? "Already Voted"
-                        : !isWhitelisted && marketData.whitelist_enabled
-                          ? "Not Whitelisted"
-                          : isEnded
-                            ? "Ended"
-                            : "Vote"}
+                    ? "Cancelled"
+                    : hasUserVoted
+                    ? "Already Voted"
+                    : !isWhitelisted && marketData.whitelist_enabled
+                    ? "Not Whitelisted"
+                    : isEnded
+                    ? "Ended"
+                    : "Vote"}
                 </button>
               </div>
             );
