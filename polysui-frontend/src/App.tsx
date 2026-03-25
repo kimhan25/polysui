@@ -4,9 +4,10 @@ import { CreateMarket } from "./CreateMarket";
 import { Home } from "./Home";
 import { Market } from "./Market.tsx";
 import { MarketSearch } from "./MarketSearch";
+import { MyMarkets } from "./MyMarkets";
 import "./styles.css";
 
-type Page = "home" | "create" | "markets" | "market";
+type Page = "home" | "create" | "markets" | "market" | "mymarkets";
 
 function App() {
   const [currentPage, setCurrentPage] = useState<Page>("home");
@@ -49,10 +50,20 @@ function App() {
               Create
             </button>
             <button
-              className={`nav-link ${currentPage === "markets" ? "active" : ""}`}
+              className={`nav-link ${
+                currentPage === "markets" ? "active" : ""
+              }`}
               onClick={() => setCurrentPage("markets")}
             >
               Markets
+            </button>
+            <button
+              className={`nav-link ${
+                currentPage === "mymarkets" ? "active" : ""
+              }`}
+              onClick={() => setCurrentPage("mymarkets")}
+            >
+              My Markets
             </button>
           </div>
 
@@ -74,6 +85,9 @@ function App() {
         )}
         {currentPage === "markets" && (
           <MarketSearch onNavigate={navigateToMarket} />
+        )}
+        {currentPage === "mymarkets" && (
+          <MyMarkets onNavigate={navigateToMarket} />
         )}
         {currentPage === "market" && (
           <Market
